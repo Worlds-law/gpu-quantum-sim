@@ -1,8 +1,14 @@
 import cudaq
 import time
 import statistics
+import csv
+from pathlib import Path
+import psutil
+import matplotlib.pyplot as plt
+import argparse
 
 cudaq.set_target("qpp-cpu")
+
 
 
 @cudaq.kernel
@@ -18,12 +24,6 @@ def ghz(n: int):
     #2: Measure all qubits
     mz(q)
     
-    '''
-    hadamard to the first qubit then |psi1> = 1/sqrt(2) (|00> + |10>) 
-    after the CNOT |psi2>  = 1/sqrt(2) (|00> + |11>) which is the GHZ state
-    
-    removing CNOT still gives similar numbers of 00 and 11 since hadamard alone produces 2 outcomes w 50% probability each. 
-    '''
     
 def estimate_memory(n: int, precision: str = "fp64") -> int:
     """
@@ -57,7 +57,8 @@ def benchmark_ghz(n: int, runs: int = 5):
     Returns:
         Median runtime and standard deviation in seconds.
     """
-
+    if runs < 2:
+        raise ValueError("At least two timed runs are required.")
     #1: Run the GHZ circuit once as a warm-up.
     cudaq.sample(ghz, n, shots_count=1000)
     
@@ -74,12 +75,10 @@ def benchmark_ghz(n: int, runs: int = 5):
         elapsed_time = time.perf_counter() - start_time
         times.append(elapsed_time)
 
-    # 3: Calculate the median and standard deviation.
-    if runs < 2:
-        raise ValueError("At least two timed runs are required.")
+    #3: Calculate the median and standard deviation.
     median_time = statistics.median(times)
     std_dev_time = statistics.stdev(times)
-    #  4: Return both statistics.
+    
     return median_time, std_dev_time
 
 def fits_memory(
@@ -89,7 +88,6 @@ def fits_memory(
 ) -> bool:
     """
     Check whether an n-qubit FP64 statevector fits
-    within a conservative memory budget.
     """
     if n < 0:
         raise ValueError("Number of qubits must be non-negative.")
@@ -99,12 +97,104 @@ def fits_memory(
     estimated_memory = estimate_memory(n, precision="fp64")
     return estimated_memory <= available_bytes * safety_fraction
 
+def get_available_memory() -> int:
+    """
+    Return estimated available system RAM in bytes.
+    """
+    memory = psutil.virtual_memory()
+    return memory.available
+
+def run_benchmarks(
+    min_qubits: int = 8,
+    max_qubits: int = 16,
+    runs: int = 5
+):
+    """
+    Benchmark GHZ circuits over a range of qubit counts.
+    Skip configurations that exceed the memory budget.
+    """
+    results = []
+
+    for n in range(min_qubits, max_qubits + 1):
+        available = get_available_memory()
+
+        if not fits_memory(n, available):
+            print(f"{n} qubits: SKIP")
+            continue
+
+        median, std = benchmark_ghz(n, runs)
+
+    
+        results.append({
+            "n": n,
+            "median_s": median,
+            "std_s": std,
+            "est_mem_gib": estimate_memory(n, precision="fp64") / (1024**3)
+        })
+
+    return results
+
+def save_results(results: list[dict], filename: str) -> None:
+    parent_dir = Path(filename).parent
+    parent_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(filename, mode='w', newline='') as csvfile:
+        fieldnames = ["n", "median_s", "std_s", "est_mem_gib"]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        writer.writeheader()
+        writer.writerows(results)
+    
+    
+    
+def plot_benchmarks(results: list[dict], filename: str) -> None:
+        n_values = [result["n"] for result in results]
+
+        median_runtimes = [result["median_s"] for result in results]
+
+        plt.figure(figsize=(10, 6))
+    
+        plt.plot(n_values, median_runtimes, marker='o', linestyle='-', color='b', label='Median Runtime')
+        plt.yscale('log')
+        plt.xlabel("Number of Qubits")
+        plt.ylabel("Median Runtime (s)")
+        plt.title("GHZ State Simulation Performance")
+        plt.grid(True)
+        plt.savefig(filename)
 
 if __name__ == "__main__":
-    for n in [8, 12, 16]:
-        median, std = benchmark_ghz(n, runs=5)
-        print(f"n={n}: median={median:.6f}s, std={std:.6f}s")
-    median, std = benchmark_ghz(8, runs=5)
-    counts = cudaq.sample(ghz, 4, shots_count=1000)
-    print(counts)
+    parser = argparse.ArgumentParser(
+    description="Benchmark GHZ state simulation using CUDA-Q"
+)
+    parser.add_argument("--min-qubits", type=int, default=8, help="Minimum number of qubits to simulate")
+    parser.add_argument("--max-qubits", type=int, default=16, help="Maximum number of qubits to simulate")
+    parser.add_argument("--runs", type=int, default=5, help="Number of runs for each simulation")
+    args = parser.parse_args()
+    if args.min_qubits < 1:
+        parser.error("--min-qubits must be at least 1")
+
+    if args.max_qubits < args.min_qubits:
+        parser.error("--max-qubits must be >= --min-qubits")
+
+    if args.runs < 2:
+        parser.error("--runs must be at least 2")
+        
+   
+    
+    results = run_benchmarks(
+        min_qubits=args.min_qubits,
+        max_qubits=args.max_qubits,
+        runs=args.runs
+    )
+    
+    save_results(results, "results/ghz_benchmark_results.csv")
+
+    for result in results:
+        print(
+            f"n={result['n']}: "
+            f"median={result['median_s']:.6f}s, "
+            f"std={result['std_s']:.6f}s"
+        )
+    
+    plot_benchmarks(results, "results/ghz_benchmark_plot.png")
     
