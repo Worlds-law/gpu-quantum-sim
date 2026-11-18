@@ -5,15 +5,15 @@ from src.ghz_benchmark import estimate_memory, ghz, fits_memory
 def test_ghz():
     counts = cudaq.sample(ghz, 4, shots_count=1000)
 
-    #Check that only 0000 and 1111 appear.
+    #Check only 0000 and 1111 appear
     allowed = {"0000", "1111"}
     observed = set(counts)
     assert observed.issubset(allowed), f"Unexpected measurement outcomes found: {observed - allowed}"
 
-    #Calculate the fraction of 0000 outcomes.
+    #Calculate fraction of 0000 outcomes
     fraction_0000 = counts.count("0000") / counts.get_total_shots()
 
-    #Assert that this fraction is close to 0.5.
+    #Assert that this fraction is close to 0.5
     assert abs(fraction_0000 - 0.5) < 0.1
     
 def test_memory_estimator():
